@@ -2,10 +2,14 @@ package contentmanager
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/operator-framework/operator-controller/api/v1alpha1"
+	oclabels "github.com/operator-framework/operator-controller/internal/labels"
 	"k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
@@ -28,20 +32,23 @@ type ContentManager interface {
 
 type RestConfigMapper func(context.Context, client.Object, *rest.Config) (*rest.Config, error)
 
+type extensionCacheData struct {
+	Cache  cache.Cache
+	Cancel context.CancelFunc
+}
+
 type instance struct {
 	rcm             RestConfigMapper
 	baseCfg         *rest.Config
-	extensionCaches map[string]cache.Cache
-	scheme          *runtime.Scheme
+	extensionCaches map[string]extensionCacheData
 	mapper          meta.RESTMapper
 }
 
-func New(rcm RestConfigMapper, cfg *rest.Config, scheme *runtime.Scheme, mapper meta.RESTMapper) ContentManager {
+func New(rcm RestConfigMapper, cfg *rest.Config, mapper meta.RESTMapper) ContentManager {
 	return &instance{
 		rcm:             rcm,
 		baseCfg:         cfg,
-		extensionCaches: make(map[string]cache.Cache),
-		scheme:          scheme,
+		extensionCaches: make(map[string]extensionCacheData{}),
 		mapper:          mapper,
 	}
 }
@@ -54,23 +61,46 @@ func (i *instance) ManageContent(ctx context.Context, ctrl controller.Controller
 
 	// TODO: add a http.RoundTripper to the config to ensure it is always using an up
 	// to date authentication token for the ServiceAccount token provided in the ClusterExtension.
-	// Maybe this should be handled by the RestConfigMapper?
+	// Maybe this should be handled by the RestConfigMapper
+
+	// Assumptions: all objects received by the function will have the Object metadata specfically,
+	// ApiVersion and Kind set. Failure to which the code will panic when adding the types to the scheme
+	scheme := runtime.NewScheme()
+	for _, obj := range objs {
+		gvk := obj.GetObjectKind().GetVersionKind()
+		listKind := obj.GetObjectKind().GetVersionKind().Kind + "List"
+
+		if gvk.Kind == "" || gvk.Version == "" {
+			return errors.New("object Kind or Version is not defined")
+		}
+
+		if !scheme.Recognizes(gvk) {
+			u := &unstructured.Unstructured{}
+			u.SetGroupVersionKind(gvk)
+			ul := &unstructured.UnstructuredList{}
+
+			ul.SetGroupVersionKind(gvk.GroupVersion().WithKind(listKind))
+
+			scheme.AddKnownTypeWithName(gvk, u)
+			scheme.AddKnownTypeWithName(gvk.GroupVersion().WithKind(listKind), ul)
+			metav1.AddToGroupVersion(scheme, gvk.GroupVersion())
+		}
+	}
+
+	tgtLabels := labels.Set{
+		oclabels.OwnerKindKey: v1alpha1.ClusterExtensionKind,
+		oclabels.OwnerNameKey: ce.GetName(),
+	}
 
 	c, err := cache.New(cfg, cache.Options{
-		// TODO: explore how we can dynamically build this scheme based on the provided
-		// resources to be managed. Using a top level scheme will not be sufficient as
-		// that means it will have to know of every type that could be watched on startup
-		Scheme: i.scheme,
+		Scheme:               scheme,
+		DefaultLabelSelector: tgtLabels.AsSelector(),
 	})
 	if err != nil {
 		return fmt.Errorf("creating cache for ClusterExtension %q: %w", ce.Name, err)
 	}
 
 	for _, obj := range objs {
-		// TODO: Make sure we are sufficiently filtering
-		// the watches to cache the minimum amount of information necessary.
-		// This will likely result in some default label selection option being placed
-		// in the cache configuration.
 		err = ctrl.Watch(
 			source.Kind(
 				c,
@@ -88,17 +118,25 @@ func (i *instance) ManageContent(ctx context.Context, ctrl controller.Controller
 		}
 	}
 
+	if data, ok := i.extensionCaches[ce.GetName()]; ok {
+		data.Cancel()
+	}
+
+	ctx, cancel := context.WithCancel(ctx)
 	go c.Start(ctx)
-	// TODO: If a cache already exists, we should ensure that we are removing informers
-	// for any resources that no longer need to be watched. Ideally we would not always create
-	// a new cache, but it could be acceptable to do so and leave optimization as a follow up item.
-	// if we continue to create a new cache every time, we should ensure that we are appropriately stopping
-	// the cache and configured sources _before_ replacing it in the mapping.
-	i.extensionCaches[ce.Name] = c
+	i.extensionCaches[ce.Name] = extensionsCacheData{
+		Cache:  c,
+		Cancel: cancel,
+	}
 
 	return nil
 }
 
 func (i *instance) RemoveManagedContent(ce *v1alpha1.ClusterExtension) error {
-	panic("Not implemented!")
+	if data, ok := i.extensionCaches[ce.GetName()]; ok {
+		data.Cancel()
+		delete(i.extensionCaches, ce.GetName)
+	}
+
+	return nil
 }
