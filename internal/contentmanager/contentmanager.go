@@ -8,6 +8,7 @@ import (
 	"github.com/operator-framework/operator-controller/api/v1alpha1"
 	oclabels "github.com/operator-framework/operator-controller/internal/labels"
 	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -48,7 +49,7 @@ func New(rcm RestConfigMapper, cfg *rest.Config, mapper meta.RESTMapper) Content
 	return &instance{
 		rcm:             rcm,
 		baseCfg:         cfg,
-		extensionCaches: make(map[string]extensionCacheData{}),
+		extensionCaches: make(map[string]extensionCacheData),
 		mapper:          mapper,
 	}
 }
@@ -67,8 +68,8 @@ func (i *instance) ManageContent(ctx context.Context, ctrl controller.Controller
 	// ApiVersion and Kind set. Failure to which the code will panic when adding the types to the scheme
 	scheme := runtime.NewScheme()
 	for _, obj := range objs {
-		gvk := obj.GetObjectKind().GetVersionKind()
-		listKind := obj.GetObjectKind().GetVersionKind().Kind + "List"
+		gvk := obj.GetObjectKind().GroupVersionKind()
+		listKind := obj.GetObjectKind().GroupVersionKind().Kind + "List"
 
 		if gvk.Kind == "" || gvk.Version == "" {
 			return errors.New("object Kind or Version is not defined")
@@ -106,7 +107,7 @@ func (i *instance) ManageContent(ctx context.Context, ctrl controller.Controller
 				c,
 				obj,
 				handler.TypedEnqueueRequestForOwner[client.Object](
-					i.scheme,
+					scheme,
 					i.mapper,
 					ce,
 				),
@@ -124,7 +125,7 @@ func (i *instance) ManageContent(ctx context.Context, ctrl controller.Controller
 
 	ctx, cancel := context.WithCancel(ctx)
 	go c.Start(ctx)
-	i.extensionCaches[ce.Name] = extensionsCacheData{
+	i.extensionCaches[ce.Name] = extensionCacheData{
 		Cache:  c,
 		Cancel: cancel,
 	}
@@ -135,7 +136,7 @@ func (i *instance) ManageContent(ctx context.Context, ctrl controller.Controller
 func (i *instance) RemoveManagedContent(ce *v1alpha1.ClusterExtension) error {
 	if data, ok := i.extensionCaches[ce.GetName()]; ok {
 		data.Cancel()
-		delete(i.extensionCaches, ce.GetName)
+		delete(i.extensionCaches, ce.GetName())
 	}
 
 	return nil
