@@ -54,25 +54,20 @@ func New(rcm RestConfigMapper, cfg *rest.Config, mapper meta.RESTMapper) Content
 	}
 }
 
-func (i *instance) ManageContent(ctx context.Context, ctrl controller.Controller, ce *v1alpha1.ClusterExtension, objs []client.Object) error {
-	cfg, err := i.rcm(ctx, ce, i.baseCfg)
-	if err != nil {
-		return fmt.Errorf("getting rest.Config for ClusterExtension %q: %w", ce.Name, err)
-	}
-
-	// TODO: add a http.RoundTripper to the config to ensure it is always using an up
-	// to date authentication token for the ServiceAccount token provided in the ClusterExtension.
-	// Maybe this should be handled by the RestConfigMapper
-
+func buildScheme(objs []client.Object) (*runtime.Scheme, error) {
 	// Assumptions: all objects received by the function will have the Object metadata specfically,
 	// ApiVersion and Kind set. Failure to which the code will panic when adding the types to the scheme
 	scheme := runtime.NewScheme()
+	if err := v1alpha1.AddToScheme(scheme); err != nil {
+		return nil, fmt.Errorf("adding operator controller APIs to scheme: %w", err)
+	}
+
 	for _, obj := range objs {
 		gvk := obj.GetObjectKind().GroupVersionKind()
 		listKind := obj.GetObjectKind().GroupVersionKind().Kind + "List"
 
 		if gvk.Kind == "" || gvk.Version == "" {
-			return errors.New("object Kind or Version is not defined")
+			return nil, errors.New("object Kind or Version is not defined")
 		}
 
 		if !scheme.Recognizes(gvk) {
@@ -86,6 +81,26 @@ func (i *instance) ManageContent(ctx context.Context, ctrl controller.Controller
 			scheme.AddKnownTypeWithName(gvk.GroupVersion().WithKind(listKind), ul)
 			metav1.AddToGroupVersion(scheme, gvk.GroupVersion())
 		}
+	}
+
+	return scheme, nil
+}
+
+func (i *instance) ManageContent(ctx context.Context, ctrl controller.Controller, ce *v1alpha1.ClusterExtension, objs []client.Object) error {
+	cfg, err := i.rcm(ctx, ce, i.baseCfg)
+	if err != nil {
+		return fmt.Errorf("getting rest.Config for ClusterExtension %q: %w", ce.Name, err)
+	}
+
+	// TODO: add a http.RoundTripper to the config to ensure it is always using an up
+	// to date authentication token for the ServiceAccount token provided in the ClusterExtension.
+	// Maybe this should be handled by the RestConfigMapper
+
+	// Assumptions: all objects received by the function will have the Object metadata specfically,
+	// ApiVersion and Kind set. Failure to which the code will panic when adding the types to the scheme
+	scheme, err := buildScheme(objs)
+	if err != nil {
+		return err
 	}
 
 	tgtLabels := labels.Set{
@@ -111,7 +126,6 @@ func (i *instance) ManageContent(ctx context.Context, ctrl controller.Controller
 					i.mapper,
 					ce,
 				),
-				nil,
 			),
 		)
 		if err != nil {
