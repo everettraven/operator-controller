@@ -2,7 +2,6 @@ package contentmanager
 
 import (
 	"context"
-	"errors"
 	"fmt"
 
 	"github.com/operator-framework/operator-controller/api/v1alpha1"
@@ -45,6 +44,7 @@ type instance struct {
 	mapper          meta.RESTMapper
 }
 
+// New creates a new ContentManager object
 func New(rcm RestConfigMapper, cfg *rest.Config, mapper meta.RESTMapper) ContentManager {
 	return &instance{
 		rcm:             rcm,
@@ -66,8 +66,18 @@ func buildScheme(objs []client.Object) (*runtime.Scheme, error) {
 		gvk := obj.GetObjectKind().GroupVersionKind()
 		listKind := obj.GetObjectKind().GroupVersionKind().Kind + "List"
 
-		if gvk.Kind == "" || gvk.Version == "" {
-			return nil, errors.New("object Kind or Version is not defined")
+		if gvk.Kind == "" {
+			return nil, fmt.Errorf(
+				"adding %s to scheme; object Kind is not defined",
+				obj.GetName(),
+			)
+		}
+
+		if gvk.Version == "" {
+			return nil, fmt.Errorf(
+				"adding %s to scheme; object Version is not defined",
+				obj.GetName(),
+			)
 		}
 
 		if !scheme.Recognizes(gvk) {
@@ -87,6 +97,19 @@ func buildScheme(objs []client.Object) (*runtime.Scheme, error) {
 }
 
 func (i *instance) ManageContent(ctx context.Context, ctrl controller.Controller, ce *v1alpha1.ClusterExtension, objs []client.Object) error {
+	// Return nil if the objs slice is empty before any further action
+	if len(objs) == 0 {
+		return nil
+	}
+
+	if ce == nil {
+		return nil
+	}
+
+	if ctrl == nil {
+		return nil
+	}
+
 	cfg, err := i.rcm(ctx, ce, i.baseCfg)
 	if err != nil {
 		return fmt.Errorf("getting rest.Config for ClusterExtension %q: %w", ce.Name, err)
@@ -100,7 +123,11 @@ func (i *instance) ManageContent(ctx context.Context, ctrl controller.Controller
 	// ApiVersion and Kind set. Failure to which the code will panic when adding the types to the scheme
 	scheme, err := buildScheme(objs)
 	if err != nil {
-		return err
+		return fmt.Errorf(
+			"building scheme for %s; %w",
+			ce.GetName(),
+			err,
+		)
 	}
 
 	tgtLabels := labels.Set{
@@ -148,6 +175,10 @@ func (i *instance) ManageContent(ctx context.Context, ctrl controller.Controller
 }
 
 func (i *instance) RemoveManagedContent(ce *v1alpha1.ClusterExtension) error {
+	if ce == nil {
+		return nil
+	}
+
 	if data, ok := i.extensionCaches[ce.GetName()]; ok {
 		data.Cancel()
 		delete(i.extensionCaches, ce.GetName())

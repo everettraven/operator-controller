@@ -2,6 +2,7 @@ package contentmanager
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/operator-framework/operator-controller/api/v1alpha1"
@@ -50,6 +51,42 @@ func TestManageContent(t *testing.T) {
 				},
 			},
 			wantErr: false,
+		},
+		{
+			name: "Fail when the rest config mapper returns an error",
+			rcm: func(_ context.Context, _ client.Object, cfg *rest.Config) (*rest.Config, error) {
+				return nil, errors.New("failed getting rest config")
+			},
+			config: &rest.Config{},
+			ce: &v1alpha1.ClusterExtension{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-cluster-extension",
+				},
+			},
+			objs: []client.Object{
+				&corev1.Pod{},
+			},
+			wantErr: true,
+		},
+		{
+			name: "Should return an error when buildScheme() fails",
+			rcm: func(_ context.Context, _ client.Object, cfg *rest.Config) (*rest.Config, error) {
+				return cfg, nil
+			},
+			config: &rest.Config{},
+			ce: &v1alpha1.ClusterExtension{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-cluster-extension",
+				},
+			},
+			objs: []client.Object{
+				&corev1.Pod{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "webserver",
+					},
+				},
+			},
+			wantErr: true,
 		},
 	}
 
