@@ -47,6 +47,7 @@ import (
 	"github.com/operator-framework/operator-controller/internal/controllers"
 	"github.com/operator-framework/operator-controller/internal/httputil"
 	"github.com/operator-framework/operator-controller/internal/labels"
+	"github.com/operator-framework/operator-controller/internal/resolution"
 	crdupgradesafety "github.com/operator-framework/operator-controller/internal/rukpak/preflights/crdupgradesafety"
 	"github.com/operator-framework/operator-controller/internal/rukpak/source"
 	"github.com/operator-framework/operator-controller/internal/version"
@@ -188,7 +189,6 @@ func main() {
 	acg, err := action.NewWrappedActionClientGetter(cfgGetter,
 		helmclient.WithFailureRollbacks(false),
 	)
-
 	if err != nil {
 		setupLog.Error(err, "unable to create helm client")
 		os.Exit(1)
@@ -222,15 +222,22 @@ func main() {
 		crdupgradesafety.NewPreflight(aeClient.CustomResourceDefinitions()),
 	}
 
-	if err = (&controllers.ClusterExtensionReconciler{
-		Client:                cl,
+	resolver := &resolution.Resolver{
 		BundleProvider:        catalogClient,
-		ActionClientGetter:    acg,
-		Unpacker:              unpacker,
-		InstalledBundleGetter: &controllers.DefaultInstalledBundleGetter{ActionClientGetter: acg},
-		Finalizers:            clusterExtensionFinalizers,
-		CaCertPool:            certPool,
-		Preflights:            preflights,
+		InstalledBundleGetter: &resolution.DefaultInstalledBundleGetter{ActionClientGetter: acg},
+        Validations: []resolution.ValidationFunc{
+            resolution.NoDependencyValidation,
+        },
+	}
+
+	if err = (&controllers.ClusterExtensionReconciler{
+		Client:             cl,
+		ActionClientGetter: acg,
+		Unpacker:           unpacker,
+		Finalizers:         clusterExtensionFinalizers,
+		CaCertPool:         certPool,
+		Preflights:         preflights,
+		Resolver:           resolver,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "ClusterExtension")
 		os.Exit(1)
