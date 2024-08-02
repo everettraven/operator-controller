@@ -25,8 +25,9 @@ func WithValidator(v *kappcus.Validator) Option {
 }
 
 type Preflight struct {
-	crdClient apiextensionsv1client.CustomResourceDefinitionInterface
-	validator *kappcus.Validator
+	crdClient             apiextensionsv1client.CustomResourceDefinitionInterface
+	validator             *kappcus.Validator
+	crossVersionValidator *crossVersionValidator
 }
 
 func NewPreflight(crdCli apiextensionsv1client.CustomResourceDefinitionInterface, opts ...Option) *Preflight {
@@ -53,6 +54,21 @@ func NewPreflight(crdCli apiextensionsv1client.CustomResourceDefinitionInterface
 						kappcus.DefaultValueChangeValidation,
 					},
 				},
+			},
+		},
+		crossVersionValidator: &crossVersionValidator{
+			changeValidations: []kappcus.ChangeValidation{
+				kappcus.EnumChangeValidation,
+				kappcus.RequiredFieldChangeValidation,
+				kappcus.MaximumChangeValidation,
+				kappcus.MaximumItemsChangeValidation,
+				kappcus.MaximumLengthChangeValidation,
+				kappcus.MaximumPropertiesChangeValidation,
+				kappcus.MinimumChangeValidation,
+				kappcus.MinimumItemsChangeValidation,
+				kappcus.MinimumLengthChangeValidation,
+				kappcus.MinimumPropertiesChangeValidation,
+				kappcus.DefaultValueChangeValidation,
 			},
 		},
 	}
@@ -103,7 +119,58 @@ func (p *Preflight) Upgrade(ctx context.Context, rel *release.Release) error {
 		if err != nil {
 			validateErrors = append(validateErrors, fmt.Errorf("validating upgrade for CRD %q failed: %w", newCrd.Name, err))
 		}
+
+        err = p.crossVersionValidator.Validate(*newCrd)
+        if err != nil {
+			validateErrors = append(validateErrors, fmt.Errorf("cross version validation for CRD %q failed: %w", newCrd.Name, err))
+        }
 	}
 
 	return errors.Join(validateErrors...)
+}
+
+type crossVersionValidator struct {
+	changeValidations []kappcus.ChangeValidation
+}
+
+func (cvv *crossVersionValidator) Validate(crd apiextensionsv1.CustomResourceDefinition) error {
+	errs := []error{}
+	for _, versionA := range crd.Spec.Versions {
+		for _, versionB := range crd.Spec.Versions {
+			// We don't need to check the same version for compatibility. That should
+			// already be handled.
+			if versionA.Name == versionB.Name {
+				continue
+			}
+
+			flatOld := kappcus.FlattenSchema(versionA.Schema.OpenAPIV3Schema)
+			flatNew := kappcus.FlattenSchema(versionB.Schema.OpenAPIV3Schema)
+
+			diffs, err := kappcus.CalculateFlatSchemaDiff(flatOld, flatNew)
+			if err != nil {
+				errs = append(errs, fmt.Errorf("calculating schema diff for CRD version %q against CRD version %q", versionA.Name, versionB.Name))
+				continue
+			}
+
+			for field, diff := range diffs {
+				handled := false
+				for _, validation := range cvv.changeValidations {
+					ok, err := validation(diff)
+					if err != nil {
+						errs = append(errs, fmt.Errorf("version %q compared to version %q, field %q: %w", versionA.Name, versionB.Name, field, err))
+					}
+					if ok {
+						handled = true
+						break
+					}
+				}
+
+				if !handled {
+					errs = append(errs, fmt.Errorf("version %q compared to version %q, field %q has unknown change, refusing to determine that change is safe", versionA.Name, versionB.Name, field))
+				}
+			}
+		}
+	}
+
+	return errors.Join(errs...)
 }
