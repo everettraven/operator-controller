@@ -32,7 +32,8 @@ jobs:
   execute:
     runs-on: ubuntu-latest
     steps:
-      - uses: jpmcb/prow-github-actions@v1
+      - name: prow-gha
+        uses: jpmcb/prow-github-actions@v1.1.3
         with:
           prow-commands: '/assign 
             /unassign 
