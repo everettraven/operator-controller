@@ -1,0 +1,44 @@
+# Uses https://github.com/jpmcb/prow-github-actions to simulate
+# prow interactions using GitHub Actions. There are a few
+# different ways that this action can be used, including
+# automatically merging PRs with the LGTM label.
+#
+# For now, lets limit to simply adding labels with
+# - /lgtm, adds "lgtm" label signaling that "code looks good" from a reviewer
+# - /approve, adds "approved" label signaling that PR is approved from an approver and will be merged
+# - /hold, adds "hold" label signaling that the PR should not be merged until the hold is removed. Can be removed with "/hold cancel"
+#
+# Managing review requests from specific people with
+# - /cc
+# - /uncc
+#
+# Managing issue assignment with
+# - /assign
+# - /unassign
+#
+name: "Prow github actions"
+on:
+  issue_comment:
+    types: [created]
+
+# Grant additional permissions to the GITHUB_TOKEN
+permissions:
+  # Allow labeling issues
+  issues: write
+  # Allow adding a review to a pull request
+  pull-requests: write
+
+jobs:
+  execute:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: jpmcb/prow-github-actions@v1
+        with:
+          prow-commands: '/assign 
+            /unassign 
+            /approve 
+            /lgtm 
+            /hold 
+            /cc 
+            /uncc'
+          github-token: "${{ secrets.GITHUB_TOKEN }}"
