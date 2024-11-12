@@ -321,7 +321,7 @@ type CatalogSource struct {
 	//
 	// When this field is omitted, the default value is "CatalogProvided".
 	//
-	// +kubebuilder:validation:Enum:=CatalogProvided;SelfCertified
+	// +kubebuilder:validation:Enum:=CatalogProvided;SelfCertified;FooBar
 	// +kubebuilder:default:=CatalogProvided
 	// +optional
 	UpgradeConstraintPolicy UpgradeConstraintPolicy `json:"upgradeConstraintPolicy,omitempty"`
